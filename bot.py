@@ -3,7 +3,7 @@ import logging
 import random
 import string
 from dotenv import load_dotenv
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters, enums, idle
 from pyrogram.errors import UserNotParticipant
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from pymongo import MongoClient
@@ -56,6 +56,14 @@ except Exception as e:
 # --- Pyrogram Client ---
 app = Client("FileLinkBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# --- Temporary LOG Channel Test ---
+async def test_log_channel():
+    try:
+        chat = await app.get_chat(LOG_CHANNEL)
+        logging.info(f"✅ LOG CHANNEL TEST SUCCESS: {chat.title} | ID: {chat.id}")
+    except Exception as e:
+        logging.error(f"❌ LOG CHANNEL TEST FAILED: {e}")
+
 # --- Helper Functions ---
 def generate_random_string(length=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
@@ -78,17 +86,16 @@ async def get_bot_mode() -> str:
     return "public"
 
 # --- Bot Command Handlers ---
-
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     if len(message.command) > 1:
         file_id_str = message.command[1]
-        
+
         if not await is_user_member(client, message.from_user.id):
             join_button = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")
             joined_button = InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{file_id_str}")
             keyboard = InlineKeyboardMarkup([[join_button], [joined_button]])
-            
+
             await message.reply(
                 f"👋 **Hello, {message.from_user.first_name}!**\n\nYe file access karne ke liye, aapko hamara update channel join karna hoga.",
                 reply_markup=keyboard
@@ -114,7 +121,7 @@ async def file_handler(client: Client, message: Message):
         return
 
     status_msg = await message.reply("⏳ Please wait, file upload kar raha hu...", quote=True)
-    
+
     try:
         forwarded_message = await message.forward(LOG_CHANNEL)
         file_id_str = generate_random_string()
@@ -134,13 +141,13 @@ async def settings_handler(client: Client, message: Message):
     if message.from_user.id not in ADMINS:
         await message.reply("❌ Aapke paas is command ko use karne ki permission nahi hai.")
         return
-    
+
     current_mode = await get_bot_mode()
-    
+
     public_button = InlineKeyboardButton("🌍 Public (Anyone)", callback_data="set_mode_public")
     private_button = InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")
     keyboard = InlineKeyboardMarkup([[public_button], [private_button]])
-    
+
     await message.reply(
         f"⚙️ **Bot Settings**\n\n"
         f"Abhi bot ka file upload mode **{current_mode.upper()}** hai.\n\n"
@@ -155,21 +162,21 @@ async def set_mode_callback(client: Client, callback_query: CallbackQuery):
     if callback_query.from_user.id not in ADMINS:
         await callback_query.answer("Permission Denied!", show_alert=True)
         return
-        
+
     new_mode = callback_query.data.split("_")[2]
-    
+
     settings_collection.update_one(
         {"_id": "bot_mode"},
         {"$set": {"mode": new_mode}},
         upsert=True
     )
-    
+
     await callback_query.answer(f"Mode successfully {new_mode.upper()} par set ho gaya hai!", show_alert=True)
-    
+
     public_button = InlineKeyboardButton("🌍 Public (Anyone)", callback_data="set_mode_public")
     private_button = InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")
     keyboard = InlineKeyboardMarkup([[public_button], [private_button]])
-    
+
     await callback_query.message.edit_text(
         f"⚙️ **Bot Settings**\n\n"
         f"✅ Bot ka file upload mode ab **{new_mode.upper()}** hai.\n\n"
@@ -200,12 +207,20 @@ async def check_join_callback(client: Client, callback_query: CallbackQuery):
 if __name__ == "__main__":
     if not ADMINS:
         logging.warning("WARNING: ADMIN_IDS is not set. Settings command kaam nahi karega.")
-    
+
     # Flask server ko ek alag thread me start karo
     logging.info("Starting Flask web server...")
     flask_thread = Thread(target=run_flask)
     flask_thread.start()
-    
+
     logging.info("Bot is starting...")
-    app.run()
+
+    async def test():
+        await app.start()
+        await test_log_channel()
+        await app.stop()
+
+    app.run(test())
+
     logging.info("Bot has stopped.")
+        
