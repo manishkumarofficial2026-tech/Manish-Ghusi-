@@ -2,6 +2,8 @@ import os
 import logging
 import random
 import string
+from threading import Thread
+
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.errors import UserNotParticipant
@@ -13,7 +15,7 @@ from pyrogram.types import (
 )
 from pymongo import MongoClient
 from flask import Flask
-from threading import Thread
+
 
 # =========================================================
 # FLASK / RENDER KEEP-ALIVE
@@ -36,7 +38,11 @@ def run_flask():
 # CONFIG
 # =========================================================
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
 load_dotenv()
 
 API_ID = int(os.environ.get("API_ID"))
@@ -44,16 +50,15 @@ API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
 
-# Fallback IDs from Render Environment Variables
+# Render Environment Variables
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "0"))
 UPDATE_CHANNEL = int(os.environ.get("UPDATE_CHANNEL", "0"))
 
-# Optional invite link for private UPDATE channel.
-# Example:
-# UPDATE_INVITE=https://t.me/+xxxxxxxx
+# Private UPDATE channel invite link
 UPDATE_INVITE = os.environ.get("UPDATE_INVITE", "")
 
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
+
 ADMINS = [
     int(x.strip())
     for x in ADMIN_IDS_STR.split(",")
@@ -67,6 +72,7 @@ ADMINS = [
 
 try:
     mongo_client = MongoClient(MONGO_URI)
+
     db = mongo_client["file_link_bot"]
 
     files_collection = db["files"]
@@ -95,7 +101,7 @@ app = Client(
 # HELPERS
 # =========================================================
 
-def generate_random_string(length=6):
+def generate_random_string(length=8):
     return "".join(
         random.choices(
             string.ascii_lowercase + string.digits,
@@ -109,10 +115,16 @@ def get_saved_channel(setting_id, fallback_id=0):
     MongoDB se saved channel ID nikalta hai.
     Agar saved nahi hai to Render ENV ka fallback use karta hai.
     """
-    setting = settings_collection.find_one({"_id": setting_id})
+
+    setting = settings_collection.find_one(
+        {"_id": setting_id}
+    )
 
     if setting and setting.get("chat_id"):
-        return int(setting["chat_id"])
+        try:
+            return int(setting["chat_id"])
+        except Exception:
+            pass
 
     return int(fallback_id)
 
@@ -132,9 +144,6 @@ def get_saved_update_channel():
 
 
 def get_update_invite():
-    """
-    Private UPDATE channel ke liye invite link.
-    """
     setting = settings_collection.find_one(
         {"_id": "update_channel"}
     )
@@ -145,17 +154,49 @@ def get_update_invite():
     return UPDATE_INVITE
 
 
-async def is_user_member(client: Client, user_id: int) -> bool:
+def save_channel_setting(
+    setting_id,
+    chat_id,
+    title,
+    invite_link=None
+):
     """
-    Private UPDATE channel membership check.
+    Channel configuration MongoDB me save karta hai.
     """
+
+    data = {
+        "chat_id": int(chat_id),
+        "title": title or "Private Channel",
+    }
+
+    if invite_link is not None:
+        data["invite_link"] = invite_link
+
+    settings_collection.update_one(
+        {"_id": setting_id},
+        {"$set": data},
+        upsert=True
+    )
+
+
+async def is_user_member(
+    client: Client,
+    user_id: int
+) -> bool:
+    """
+    UPDATE channel membership check.
+    """
+
     update_channel = get_saved_update_channel()
 
     if not update_channel:
-        logging.error("UPDATE channel is not configured.")
+        logging.error(
+            "UPDATE channel is not configured."
+        )
         return False
 
     try:
+
         await client.get_chat_member(
             chat_id=update_channel,
             user_id=user_id
@@ -167,23 +208,33 @@ async def is_user_member(client: Client, user_id: int) -> bool:
         return False
 
     except Exception as e:
+
         logging.error(
-            f"Error checking membership for {user_id}: {e}"
+            f"Membership check error: {e}"
         )
+
         return False
 
 
 async def get_bot_mode() -> str:
+
     setting = settings_collection.find_one(
         {"_id": "bot_mode"}
     )
 
     if setting:
-        return setting.get("mode", "public")
+        return setting.get(
+            "mode",
+            "public"
+        )
 
     settings_collection.update_one(
         {"_id": "bot_mode"},
-        {"$set": {"mode": "public"}},
+        {
+            "$set": {
+                "mode": "public"
+            }
+        },
         upsert=True
     )
 
@@ -202,13 +253,17 @@ async def start_handler(
     message: Message
 ):
 
+    # -----------------------------------------------------
+    # START WITH FILE ID
+    # -----------------------------------------------------
+
     if len(message.command) > 1:
 
         file_id_str = message.command[1]
 
-        # ---------------------------------------------
-        # UPDATE CHANNEL MEMBERSHIP
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # CHECK UPDATE CHANNEL MEMBERSHIP
+        # -------------------------------------------------
 
         if not await is_user_member(
             client,
@@ -217,41 +272,48 @@ async def start_handler(
 
             invite_link = get_update_invite()
 
+            buttons = []
+
             if invite_link:
-                join_button = InlineKeyboardButton(
-                    "🔗 Join Channel",
-                    url=invite_link
-                )
-            else:
-                join_button = InlineKeyboardButton(
-                    "🔗 Join Channel",
-                    url="https://t.me/"
+
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            "🔗 Join Channel",
+                            url=invite_link
+                        )
+                    ]
                 )
 
-            joined_button = InlineKeyboardButton(
-                "✅ I Have Joined",
-                callback_data=f"check_join_{file_id_str}"
-            )
-
-            keyboard = InlineKeyboardMarkup(
+            buttons.append(
                 [
-                    [join_button],
-                    [joined_button]
+                    InlineKeyboardButton(
+                        "✅ I Have Joined",
+                        callback_data=(
+                            f"check_join_{file_id_str}"
+                        )
+                    )
                 ]
             )
 
+            keyboard = InlineKeyboardMarkup(
+                buttons
+            )
+
             await message.reply(
-                f"👋 **Hello, {message.from_user.first_name}!**\n\n"
-                "Ye file access karne ke liye, "
-                "aapko hamara update channel join karna hoga.",
+                f"👋 **Hello, "
+                f"{message.from_user.first_name}!**\n\n"
+                "Ye file access karne ke liye "
+                "aapko hamara update channel "
+                "join karna hoga.",
                 reply_markup=keyboard
             )
 
             return
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # GET FILE RECORD
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         file_record = files_collection.find_one(
             {"_id": file_id_str}
@@ -260,24 +322,34 @@ async def start_handler(
         if not file_record:
 
             await message.reply(
-                "🤔 File not found!\n\n"
-                "Ho sakta hai link galat ya expire ho gaya ho."
+                "🤔 **File not found!**\n\n"
+                "Ho sakta hai link galat ya "
+                "expire ho gaya ho."
             )
 
             return
 
-        # ---------------------------------------------
-        # SEND FILE FROM LOG CHANNEL
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # SEND FILE FROM LOG CHANNEL ONLY
+        # -------------------------------------------------
 
         try:
 
-            log_channel = get_saved_log_channel()
+            log_channel = int(
+                file_record.get(
+                    "log_channel",
+                    get_saved_log_channel()
+                )
+            )
+
+            message_id = int(
+                file_record["message_id"]
+            )
 
             await client.copy_message(
                 chat_id=message.from_user.id,
                 from_chat_id=log_channel,
-                message_id=file_record["message_id"]
+                message_id=message_id
             )
 
         except Exception as e:
@@ -287,18 +359,22 @@ async def start_handler(
             )
 
             await message.reply(
-                "❌ Sorry, file bhejte waqt "
-                "ek error aa gaya.\n\n"
+                "❌ **Sorry!** File bhejte waqt "
+                "error aa gaya.\n\n"
                 f"`Error: {e}`"
             )
 
-    else:
+        return
 
-        await message.reply(
-            "**Hello! Mai ek File-to-Link bot hu.**\n\n"
-            "Mujhe koi bhi file bhejo, "
-            "aur mai aapko uska shareable link dunga."
-        )
+    # -----------------------------------------------------
+    # NORMAL /START
+    # -----------------------------------------------------
+
+    await message.reply(
+        "👋 **Hello! Mai ek File-to-Link bot hu.**\n\n"
+        "Mujhe koi bhi file bhejo, "
+        "aur mai aapko uska shareable link dunga."
+    )
 
 
 # =========================================================
@@ -330,7 +406,8 @@ async def file_handler(
 
         await message.reply(
             "😔 **Sorry!**\n\n"
-            "Abhi sirf Admins hi files upload kar sakte hain."
+            "Abhi sirf Admins hi files "
+            "upload kar sakte hain."
         )
 
         return
@@ -342,27 +419,42 @@ async def file_handler(
 
     try:
 
-        # ---------------------------------------------
-        # ONLY LOG CHANNEL
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # LOG CHANNEL ONLY
+        # -------------------------------------------------
 
         log_channel = get_saved_log_channel()
 
         if not log_channel:
+
             raise Exception(
                 "LOG channel configured nahi hai."
             )
 
-        # File ONLY LOG channel me forward hogi.
+        # -------------------------------------------------
+        # FILE ONLY GOES TO LOG CHANNEL
+        # -------------------------------------------------
+
         forwarded_message = await message.forward(
             log_channel
         )
 
-        # ---------------------------------------------
-        # SAVE FILE RECORD
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # GENERATE UNIQUE FILE ID
+        # -------------------------------------------------
 
         file_id_str = generate_random_string()
+
+        # Make sure ID is unique
+        while files_collection.find_one(
+            {"_id": file_id_str}
+        ):
+
+            file_id_str = generate_random_string()
+
+        # -------------------------------------------------
+        # SAVE DATABASE RECORD
+        # -------------------------------------------------
 
         files_collection.insert_one(
             {
@@ -372,17 +464,21 @@ async def file_handler(
             }
         )
 
-        # ---------------------------------------------
-        # CREATE LINK
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # CREATE SHARE LINK
+        # -------------------------------------------------
 
         me = await client.get_me()
 
-        bot_username = me.username
+        if not me.username:
+
+            raise Exception(
+                "Bot username available nahi hai."
+            )
 
         share_link = (
             f"https://t.me/"
-            f"{bot_username}"
+            f"{me.username}"
             f"?start={file_id_str}"
         )
 
@@ -394,8 +490,8 @@ async def file_handler(
 
     except Exception as e:
 
-        logging.error(
-            f"File handling error: {e}"
+        logging.exception(
+            "File handling error"
         )
 
         await status_msg.edit_text(
@@ -404,6 +500,56 @@ async def file_handler(
             "Please try again.\n\n"
             f"`Details: {e}`"
         )
+
+
+# =========================================================
+# CHANNEL DETECTION HELPER
+# =========================================================
+
+def get_forwarded_channel(message: Message):
+    """
+    Forwarded channel message se channel information
+    nikalta hai.
+
+    IMPORTANT:
+    Yahan get_chat() use nahi kiya gaya.
+    Isse private channel ke numeric peer ko dobara
+    unnecessarily resolve karne ki problem kam hoti hai.
+    """
+
+    source = None
+
+    if message.reply_to_message:
+
+        source = (
+            message.reply_to_message.forward_from_chat
+        )
+
+        if source is None:
+
+            try:
+
+                origin = (
+                    message.reply_to_message.forward_origin
+                )
+
+                if origin and hasattr(
+                    origin,
+                    "chat"
+                ):
+                    source = origin.chat
+
+            except Exception:
+                pass
+
+    if (
+        source is None
+        and message.forward_from_chat
+    ):
+
+        source = message.forward_from_chat
+
+    return source
 
 
 # =========================================================
@@ -427,58 +573,23 @@ async def setlog_handler(
 
         return
 
-    source = None
-
-    # ---------------------------------------------
-    # FORWARDED MESSAGE REPLY
-    # ---------------------------------------------
-
-    if message.reply_to_message:
-
-        source = (
-            message.reply_to_message.forward_from_chat
-        )
-
-        if source is None:
-
-            try:
-
-                origin = (
-                    message.reply_to_message.forward_origin
-                )
-
-                if origin and hasattr(origin, "chat"):
-                    source = origin.chat
-
-            except Exception:
-                pass
-
-    # ---------------------------------------------
-    # /SETLOG ITSELF FORWARDED
-    # ---------------------------------------------
-
-    if (
-        source is None
-        and message.forward_from_chat
-    ):
-
-        source = message.forward_from_chat
+    source = get_forwarded_channel(message)
 
     if source is None:
 
         await message.reply(
-            "❌ LOG channel detect nahi hua.\n\n"
-            "1. Private LOG channel ki koi message "
-            "bot ko forward karo.\n"
+            "❌ **LOG channel detect nahi hua.**\n\n"
+            "1. Private LOG/Database channel ki "
+            "koi message bot ko forward karo.\n"
             "2. Us forwarded message ke direct reply "
             "me `/setlog` bhejo.\n\n"
-            "⚠️ Content Protection ON hai to forwarding "
-            "allowed nahi hogi."
+            "⚠️ Agar Content Protection ON hai, "
+            "forwarding allowed nahi ho sakti."
         )
 
         return
 
-    chat_id = source.id
+    chat_id = int(source.id)
 
     if chat_id >= 0:
 
@@ -492,40 +603,41 @@ async def setlog_handler(
 
     try:
 
-        chat = await client.get_chat(chat_id)
+        title = (
+            getattr(source, "title", None)
+            or "LOG Channel"
+        )
 
-        settings_collection.update_one(
-            {"_id": "log_channel"},
-            {
-                "$set": {
-                    "chat_id": chat.id,
-                    "title": chat.title or "LOG Channel",
-                }
-            },
-            upsert=True
+        # -------------------------------------------------
+        # IMPORTANT:
+        # get_chat(chat_id) intentionally removed.
+        # -------------------------------------------------
+
+        save_channel_setting(
+            "log_channel",
+            chat_id,
+            title
         )
 
         await message.reply(
             "✅ **LOG Channel Set Successfully!**\n\n"
-            f"📢 Channel: "
-            f"**{chat.title or 'Private Channel'}**\n"
-            f"🆔 ID: `{chat.id}`\n\n"
-            "Ab UPDATE channel set karne ke liye "
-            "alag se `/setupdate` use karo."
+            f"📢 Channel: **{title}**\n"
+            f"🆔 ID: `{chat_id}`\n\n"
+            "Ab uploaded files isi LOG channel "
+            "me jayengi.\n\n"
+            "UPDATE channel ke liye "
+            "`/setupdate` use karo."
         )
 
     except Exception as e:
 
-        logging.error(
-            f"/setlog error: {e}"
+        logging.exception(
+            "/setlog error"
         )
 
         await message.reply(
-            "❌ LOG channel detect ho gaya, "
-            "lekin Pyrogram us peer ko resolve nahi "
-            "kar paaya.\n\n"
-            f"`Error: {e}`\n\n"
-            "Check karo ki bot LOG channel ka member/admin hai."
+            "❌ LOG channel save nahi ho paaya.\n\n"
+            f"`Error: {e}`"
         )
 
 
@@ -552,58 +664,21 @@ async def setupdate_handler(
 
         return
 
-    source = None
-
-    # ---------------------------------------------
-    # FORWARDED UPDATE MESSAGE REPLY
-    # ---------------------------------------------
-
-    if message.reply_to_message:
-
-        source = (
-            message.reply_to_message.forward_from_chat
-        )
-
-        if source is None:
-
-            try:
-
-                origin = (
-                    message.reply_to_message.forward_origin
-                )
-
-                if origin and hasattr(origin, "chat"):
-                    source = origin.chat
-
-            except Exception:
-                pass
-
-    # ---------------------------------------------
-    # /SETUPDATE ITSELF FORWARDED
-    # ---------------------------------------------
-
-    if (
-        source is None
-        and message.forward_from_chat
-    ):
-
-        source = message.forward_from_chat
+    source = get_forwarded_channel(message)
 
     if source is None:
 
         await message.reply(
-            "❌ UPDATE channel detect nahi hua.\n\n"
-            "1. Private UPDATE channel ki koi message "
-            "bot ko forward karo.\n"
+            "❌ **UPDATE channel detect nahi hua.**\n\n"
+            "1. Private UPDATE channel ki "
+            "koi message bot ko forward karo.\n"
             "2. Us forwarded message ke direct reply "
-            "me `/setupdate` bhejo.\n\n"
-            "⚠️ Content Protection ON hai to forwarding "
-            "allowed nahi hogi."
+            "me `/setupdate` bhejo."
         )
 
         return
 
-    chat_id = source.id
+    chat_id = int(source.id)
 
     if chat_id >= 0:
 
@@ -617,52 +692,46 @@ async def setupdate_handler(
 
     try:
 
-        chat = await client.get_chat(chat_id)
+        title = (
+            getattr(source, "title", None)
+            or "UPDATE Channel"
+        )
 
-        # ---------------------------------------------
-        # ONLY UPDATE CHANNEL SETTING
-        # LOG CHANNEL SETTING KO TOUCH NAHI KAREGA
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # ONLY UPDATE SETTING
+        # LOG SETTING IS NOT TOUCHED
+        # -------------------------------------------------
 
-        settings_collection.update_one(
-            {"_id": "update_channel"},
-            {
-                "$set": {
-                    "chat_id": chat.id,
-                    "title": chat.title or "UPDATE Channel",
-                    "invite_link": UPDATE_INVITE,
-                }
-            },
-            upsert=True
+        save_channel_setting(
+            "update_channel",
+            chat_id,
+            title,
+            get_update_invite()
         )
 
         await message.reply(
             "✅ **UPDATE Channel Set Successfully!**\n\n"
-            f"📢 Channel: "
-            f"**{chat.title or 'Private Channel'}**\n"
-            f"🆔 ID: `{chat.id}`\n\n"
-            "Ab test link se membership check karo."
+            f"📢 Channel: **{title}**\n"
+            f"🆔 ID: `{chat_id}`\n\n"
+            "Ab is channel ko membership "
+            "check ke liye use kiya jayega.\n\n"
+            "⚠️ Uploaded files yahan nahi jayengi."
         )
 
     except Exception as e:
 
-        logging.error(
-            f"/setupdate error: {e}"
+        logging.exception(
+            "/setupdate error"
         )
 
         await message.reply(
-            "❌ UPDATE channel detect ho gaya, "
-            "lekin Pyrogram us peer ko resolve nahi "
-            "kar paaya.\n\n"
-            f"`Error: {e}`\n\n"
-            "Check karo ki bot UPDATE channel ka member/admin hai."
+            "❌ UPDATE channel save nahi ho paaya.\n\n"
+            f"`Error: {e}`"
         )
 
 
 # =========================================================
 # /SETINVITE
-# OPTIONAL
-# Private UPDATE channel ke invite link ko MongoDB me save
 # =========================================================
 
 @app.on_message(
@@ -690,7 +759,26 @@ async def setinvite_handler(
 
         return
 
-    invite_link = message.command[1].strip()
+    invite_link = (
+        message.command[1].strip()
+    )
+
+    if not invite_link.startswith(
+        "https://t.me/"
+    ):
+
+        await message.reply(
+            "❌ Valid Telegram invite link do.\n\n"
+            "Example:\n"
+            "`https://t.me/+xxxxxxxx`"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # Only invite link update.
+    # Existing UPDATE channel ID remains untouched.
+    # -----------------------------------------------------
 
     settings_collection.update_one(
         {"_id": "update_channel"},
@@ -723,8 +811,8 @@ async def settings_handler(
     if message.from_user.id not in ADMINS:
 
         await message.reply(
-            "❌ Aapke paas is command ko use karne "
-            "ki permission nahi hai."
+            "❌ Aapke paas is command ko use "
+            "karne ki permission nahi hai."
         )
 
         return
@@ -754,7 +842,8 @@ async def settings_handler(
         f"**{current_mode.upper()}** hai.\n\n"
         "**Public:** Koi bhi file bhej kar "
         "link bana sakta hai.\n"
-        "**Private:** Sirf admins hi file bhej sakte hain.\n\n"
+        "**Private:** Sirf admins hi file bhej "
+        "sakte hain.\n\n"
         "Naya mode select karein:",
         reply_markup=keyboard
     )
@@ -785,62 +874,10 @@ async def set_mode_callback(
         callback_query.data.split("_")[2]
     )
 
-    settings_collection.update_one(
-        {"_id": "bot_mode"},
-        {"$set": {"mode": new_mode}},
-        upsert=True
-    )
+    if new_mode not in (
+        "public",
+        "private"
+    ):
 
-    await callback_query.answer(
-        f"Mode successfully "
-        f"{new_mode.upper()} par set ho gaya hai!",
-        show_alert=True
-    )
-
-    public_button = InlineKeyboardButton(
-        "🌍 Public (Anyone)",
-        callback_data="set_mode_public"
-    )
-
-    private_button = InlineKeyboardButton(
-        "🔒 Private (Admins Only)",
-        callback_data="set_mode_private"
-    )
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [public_button],
-            [private_button]
-        ]
-    )
-
-    await callback_query.message.edit_text(
-        f"⚙️ **Bot Settings**\n\n"
-        f"✅ Bot ka file upload mode ab "
-        f"**{new_mode.upper()}** hai.\n\n"
-        "Naya mode select karein:",
-        reply_markup=keyboard
-    )
-
-
-# =========================================================
-# CHECK JOIN CALLBACK
-# =========================================================
-
-@app.on_callback_query(
-    filters.regex(r"^check_join_")
-)
-async def check_join_callback(
-    client: Client,
-    callback_query: CallbackQuery
-):
-
-    user_id = callback_query.from_user.id
-
-    file_id_str = (
-        callback_query.data.split("_", 2)[2]
-    )
-
-    # ---------------------------------------------
-    # CHECK UPDATE MEMBERSHIP
- 
+        await callback_query.answer(
+            "In
