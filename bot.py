@@ -952,30 +952,4 @@ async def settings_handler(
         f"⚙️ **Bot Settings**\n\n"
         f"Abhi bot ka file upload mode "
         f"**{current_mode.upper()}** hai.\n\n"
-        "**Public:** Koi bhi file bhej kar "
-        "link bana sakta hai.\n"
-        "**Private:** Sirf admins hi file bhej "
-        "sakte hain.\n\n"
-        "Naya mode select karein:",
-        reply_markup=keyboard
-    )
-
-
-# =========================================================
-# MODE CALLBACK
-# =========================================================
-
-@app.on_callback_query(
-    filters.regex(r"^set_mode_")
-)
-async def set_mode_callback(
-    client: Client,
-    callback_query: CallbackQuery
-):
-
-    if (
-        callback_query.from_user.id
-        not in ADMINS
-    ):
-
-        await c
+        "**Public:** Koi bhi file bh
