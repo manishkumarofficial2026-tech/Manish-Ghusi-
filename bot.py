@@ -1,3 +1,13 @@
+print("BOT FILE STARTING...", flush=True)
+
+import os
+print("API_ID exists:", bool(os.environ.get("API_ID")), flush=True)
+print("API_HASH exists:", bool(os.environ.get("API_HASH")), flush=True)
+print("BOT_TOKEN exists:", bool(os.environ.get("BOT_TOKEN")), flush=True)
+print("MONGO_URI exists:", bool(os.environ.get("MONGO_URI")), flush=True)
+print("ADMIN_IDS:", os.environ.get("ADMIN_IDS"), flush=True)
+print("LOG_CHANNEL exists:", bool(os.environ.get("LOG_CHANNEL")), flush=True)
+print("UPDATE_CHANNEL exists:", bool(os.environ.get("UPDATE_CHANNEL")), flush=True)
 import os
 import logging
 import random
