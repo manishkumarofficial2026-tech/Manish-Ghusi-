@@ -31,7 +31,10 @@ def index():
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host="0.0.0.0", port=port)
+    flask_app.run(
+        host="0.0.0.0",
+        port=port
+    )
 
 
 # =========================================================
@@ -51,13 +54,24 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
 
 # Render Environment Variables
-LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "0"))
-UPDATE_CHANNEL = int(os.environ.get("UPDATE_CHANNEL", "0"))
+LOG_CHANNEL = int(
+    os.environ.get("LOG_CHANNEL", "0")
+)
+
+UPDATE_CHANNEL = int(
+    os.environ.get("UPDATE_CHANNEL", "0")
+)
 
 # Private UPDATE channel invite link
-UPDATE_INVITE = os.environ.get("UPDATE_INVITE", "")
+UPDATE_INVITE = os.environ.get(
+    "UPDATE_INVITE",
+    ""
+)
 
-ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
+ADMIN_IDS_STR = os.environ.get(
+    "ADMIN_IDS",
+    ""
+)
 
 ADMINS = [
     int(x.strip())
@@ -71,17 +85,33 @@ ADMINS = [
 # =========================================================
 
 try:
-    mongo_client = MongoClient(MONGO_URI)
 
-    db = mongo_client["file_link_bot"]
+    mongo_client = MongoClient(
+        MONGO_URI
+    )
 
-    files_collection = db["files"]
-    settings_collection = db["settings"]
+    db = mongo_client[
+        "file_link_bot"
+    ]
 
-    logging.info("MongoDB Connected Successfully!")
+    files_collection = db[
+        "files"
+    ]
+
+    settings_collection = db[
+        "settings"
+    ]
+
+    logging.info(
+        "MongoDB Connected Successfully!"
+    )
 
 except Exception as e:
-    logging.error(f"Error connecting to MongoDB: {e}")
+
+    logging.error(
+        f"Error connecting to MongoDB: {e}"
+    )
+
     raise
 
 
@@ -101,19 +131,26 @@ app = Client(
 # HELPERS
 # =========================================================
 
-def generate_random_string(length=8):
+def generate_random_string(
+    length=8
+):
     return "".join(
         random.choices(
-            string.ascii_lowercase + string.digits,
+            string.ascii_lowercase
+            + string.digits,
             k=length
         )
     )
 
 
-def get_saved_channel(setting_id, fallback_id=0):
+def get_saved_channel(
+    setting_id,
+    fallback_id=0
+):
     """
     MongoDB se saved channel ID nikalta hai.
-    Agar saved nahi hai to Render ENV ka fallback use karta hai.
+    Agar saved nahi hai to Render ENV ka
+    fallback use karta hai.
     """
 
     setting = settings_collection.find_one(
@@ -121,15 +158,22 @@ def get_saved_channel(setting_id, fallback_id=0):
     )
 
     if setting and setting.get("chat_id"):
+
         try:
-            return int(setting["chat_id"])
+            return int(
+                setting["chat_id"]
+            )
+
         except Exception:
             pass
 
-    return int(fallback_id)
+    return int(
+        fallback_id
+    )
 
 
 def get_saved_log_channel():
+
     return get_saved_channel(
         "log_channel",
         LOG_CHANNEL
@@ -137,6 +181,7 @@ def get_saved_log_channel():
 
 
 def get_saved_update_channel():
+
     return get_saved_channel(
         "update_channel",
         UPDATE_CHANNEL
@@ -144,12 +189,19 @@ def get_saved_update_channel():
 
 
 def get_update_invite():
+
     setting = settings_collection.find_one(
         {"_id": "update_channel"}
     )
 
-    if setting and setting.get("invite_link"):
-        return setting["invite_link"]
+    if (
+        setting
+        and setting.get("invite_link")
+    ):
+
+        return setting[
+            "invite_link"
+        ]
 
     return UPDATE_INVITE
 
@@ -170,7 +222,10 @@ def save_channel_setting(
     }
 
     if invite_link is not None:
-        data["invite_link"] = invite_link
+
+        data[
+            "invite_link"
+        ] = invite_link
 
     settings_collection.update_one(
         {"_id": setting_id},
@@ -187,12 +242,16 @@ async def is_user_member(
     UPDATE channel membership check.
     """
 
-    update_channel = get_saved_update_channel()
+    update_channel = (
+        get_saved_update_channel()
+    )
 
     if not update_channel:
+
         logging.error(
             "UPDATE channel is not configured."
         )
+
         return False
 
     try:
@@ -205,6 +264,7 @@ async def is_user_member(
         return True
 
     except UserNotParticipant:
+
         return False
 
     except Exception as e:
@@ -223,6 +283,7 @@ async def get_bot_mode() -> str:
     )
 
     if setting:
+
         return setting.get(
             "mode",
             "public"
@@ -246,7 +307,8 @@ async def get_bot_mode() -> str:
 # =========================================================
 
 @app.on_message(
-    filters.command("start") & filters.private
+    filters.command("start")
+    & filters.private
 )
 async def start_handler(
     client: Client,
@@ -259,7 +321,9 @@ async def start_handler(
 
     if len(message.command) > 1:
 
-        file_id_str = message.command[1]
+        file_id_str = (
+            message.command[1]
+        )
 
         # -------------------------------------------------
         # CHECK UPDATE CHANNEL MEMBERSHIP
@@ -270,7 +334,9 @@ async def start_handler(
             message.from_user.id
         ):
 
-            invite_link = get_update_invite()
+            invite_link = (
+                get_update_invite()
+            )
 
             buttons = []
 
@@ -290,7 +356,8 @@ async def start_handler(
                     InlineKeyboardButton(
                         "✅ I Have Joined",
                         callback_data=(
-                            f"check_join_{file_id_str}"
+                            f"check_join_"
+                            f"{file_id_str}"
                         )
                     )
                 ]
@@ -315,8 +382,10 @@ async def start_handler(
         # GET FILE RECORD
         # -------------------------------------------------
 
-        file_record = files_collection.find_one(
-            {"_id": file_id_str}
+        file_record = (
+            files_collection.find_one(
+                {"_id": file_id_str}
+            )
         )
 
         if not file_record:
@@ -343,7 +412,9 @@ async def start_handler(
             )
 
             message_id = int(
-                file_record["message_id"]
+                file_record[
+                    "message_id"
+                ]
             )
 
             await client.copy_message(
@@ -423,7 +494,9 @@ async def file_handler(
         # LOG CHANNEL ONLY
         # -------------------------------------------------
 
-        log_channel = get_saved_log_channel()
+        log_channel = (
+            get_saved_log_channel()
+        )
 
         if not log_channel:
 
@@ -435,22 +508,27 @@ async def file_handler(
         # FILE ONLY GOES TO LOG CHANNEL
         # -------------------------------------------------
 
-        forwarded_message = await message.forward(
-            log_channel
+        forwarded_message = (
+            await message.forward(
+                log_channel
+            )
         )
 
         # -------------------------------------------------
         # GENERATE UNIQUE FILE ID
         # -------------------------------------------------
 
-        file_id_str = generate_random_string()
+        file_id_str = (
+            generate_random_string()
+        )
 
-        # Make sure ID is unique
         while files_collection.find_one(
             {"_id": file_id_str}
         ):
 
-            file_id_str = generate_random_string()
+            file_id_str = (
+                generate_random_string()
+            )
 
         # -------------------------------------------------
         # SAVE DATABASE RECORD
@@ -459,7 +537,9 @@ async def file_handler(
         files_collection.insert_one(
             {
                 "_id": file_id_str,
-                "message_id": forwarded_message.id,
+                "message_id": (
+                    forwarded_message.id
+                ),
                 "log_channel": log_channel,
             }
         )
@@ -506,15 +586,12 @@ async def file_handler(
 # CHANNEL DETECTION HELPER
 # =========================================================
 
-def get_forwarded_channel(message: Message):
+def get_forwarded_channel(
+    message: Message
+):
     """
-    Forwarded channel message se channel information
-    nikalta hai.
-
-    IMPORTANT:
-    Yahan get_chat() use nahi kiya gaya.
-    Isse private channel ke numeric peer ko dobara
-    unnecessarily resolve karne ki problem kam hoti hai.
+    Forwarded channel message se channel
+    information nikalta hai.
     """
 
     source = None
@@ -522,7 +599,8 @@ def get_forwarded_channel(message: Message):
     if message.reply_to_message:
 
         source = (
-            message.reply_to_message.forward_from_chat
+            message.reply_to_message
+            .forward_from_chat
         )
 
         if source is None:
@@ -530,13 +608,18 @@ def get_forwarded_channel(message: Message):
             try:
 
                 origin = (
-                    message.reply_to_message.forward_origin
+                    message.reply_to_message
+                    .forward_origin
                 )
 
-                if origin and hasattr(
-                    origin,
-                    "chat"
+                if (
+                    origin
+                    and hasattr(
+                        origin,
+                        "chat"
+                    )
                 ):
+
                     source = origin.chat
 
             except Exception:
@@ -547,7 +630,9 @@ def get_forwarded_channel(message: Message):
         and message.forward_from_chat
     ):
 
-        source = message.forward_from_chat
+        source = (
+            message.forward_from_chat
+        )
 
     return source
 
@@ -557,14 +642,18 @@ def get_forwarded_channel(message: Message):
 # =========================================================
 
 @app.on_message(
-    filters.command("setlog") & filters.private
+    filters.command("setlog")
+    & filters.private
 )
 async def setlog_handler(
     client: Client,
     message: Message
 ):
 
-    if message.from_user.id not in ADMINS:
+    if (
+        message.from_user.id
+        not in ADMINS
+    ):
 
         await message.reply(
             "❌ Aapke paas /setlog "
@@ -573,7 +662,9 @@ async def setlog_handler(
 
         return
 
-    source = get_forwarded_channel(message)
+    source = get_forwarded_channel(
+        message
+    )
 
     if source is None:
 
@@ -589,7 +680,9 @@ async def setlog_handler(
 
         return
 
-    chat_id = int(source.id)
+    chat_id = int(
+        source.id
+    )
 
     if chat_id >= 0:
 
@@ -604,14 +697,13 @@ async def setlog_handler(
     try:
 
         title = (
-            getattr(source, "title", None)
+            getattr(
+                source,
+                "title",
+                None
+            )
             or "LOG Channel"
         )
-
-        # -------------------------------------------------
-        # IMPORTANT:
-        # get_chat(chat_id) intentionally removed.
-        # -------------------------------------------------
 
         save_channel_setting(
             "log_channel",
@@ -648,14 +740,18 @@ async def setlog_handler(
 # =========================================================
 
 @app.on_message(
-    filters.command("setupdate") & filters.private
+    filters.command("setupdate")
+    & filters.private
 )
 async def setupdate_handler(
     client: Client,
     message: Message
 ):
 
-    if message.from_user.id not in ADMINS:
+    if (
+        message.from_user.id
+        not in ADMINS
+    ):
 
         await message.reply(
             "❌ Aapke paas /setupdate "
@@ -664,7 +760,9 @@ async def setupdate_handler(
 
         return
 
-    source = get_forwarded_channel(message)
+    source = get_forwarded_channel(
+        message
+    )
 
     if source is None:
 
@@ -678,7 +776,9 @@ async def setupdate_handler(
 
         return
 
-    chat_id = int(source.id)
+    chat_id = int(
+        source.id
+    )
 
     if chat_id >= 0:
 
@@ -693,14 +793,13 @@ async def setupdate_handler(
     try:
 
         title = (
-            getattr(source, "title", None)
+            getattr(
+                source,
+                "title",
+                None
+            )
             or "UPDATE Channel"
         )
-
-        # -------------------------------------------------
-        # ONLY UPDATE SETTING
-        # LOG SETTING IS NOT TOUCHED
-        # -------------------------------------------------
 
         save_channel_setting(
             "update_channel",
@@ -735,14 +834,18 @@ async def setupdate_handler(
 # =========================================================
 
 @app.on_message(
-    filters.command("setinvite") & filters.private
+    filters.command("setinvite")
+    & filters.private
 )
 async def setinvite_handler(
     client: Client,
     message: Message
 ):
 
-    if message.from_user.id not in ADMINS:
+    if (
+        message.from_user.id
+        not in ADMINS
+    ):
 
         await message.reply(
             "❌ Permission denied."
@@ -775,11 +878,6 @@ async def setinvite_handler(
 
         return
 
-    # -----------------------------------------------------
-    # Only invite link update.
-    # Existing UPDATE channel ID remains untouched.
-    # -----------------------------------------------------
-
     settings_collection.update_one(
         {"_id": "update_channel"},
         {
@@ -801,14 +899,18 @@ async def setinvite_handler(
 # =========================================================
 
 @app.on_message(
-    filters.command("settings") & filters.private
+    filters.command("settings")
+    & filters.private
 )
 async def settings_handler(
     client: Client,
     message: Message
 ):
 
-    if message.from_user.id not in ADMINS:
+    if (
+        message.from_user.id
+        not in ADMINS
+    ):
 
         await message.reply(
             "❌ Aapke paas is command ko use "
@@ -861,23 +963,9 @@ async def set_mode_callback(
     callback_query: CallbackQuery
 ):
 
-    if callback_query.from_user.id not in ADMINS:
-
-        await callback_query.answer(
-            "Permission Denied!",
-            show_alert=True
-        )
-
-        return
-
-    new_mode = (
-        callback_query.data.split("_")[2]
-    )
-
-    if new_mode not in (
-        "public",
-        "private"
+    if (
+        callback_query.from_user.id
+        not in ADMINS
     ):
 
-        await callback_query.answer(
-            "In
+        await c
