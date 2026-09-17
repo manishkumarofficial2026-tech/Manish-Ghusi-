@@ -3,6 +3,7 @@ import logging
 import random
 import string
 import json
+import asyncio
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -54,6 +55,7 @@ try:
     db = mongo["file_link_bot"]
     files_collection = db["files"]
     settings_collection = db["settings"]
+    batches_collection = db["batches"]
     logging.info("MongoDB Connected Successfully!")
 except Exception as e:
     logging.exception("MongoDB connection failed")
@@ -118,15 +120,14 @@ def configured_log_channel():
 
 
 def configured_update_channel():
-    # For the public Update channel, prefer the username saved by /setupdate.
-    # The username is safer than a stale/wrong numeric ID in Render ENV.
+    # Render ENV takes priority so an old MongoDB value cannot override it.
+    if UPDATE_CHANNEL:
+        return tg_chat_id(UPDATE_CHANNEL)
+
     setting = settings_collection.find_one({"_id": "update_channel"})
     username = setting.get("username") if setting else None
     if username:
         return tg_chat_id(username)
-
-    if UPDATE_CHANNEL:
-        return tg_chat_id(UPDATE_CHANNEL)
 
     if setting and setting.get("chat_id"):
         return setting["chat_id"]
@@ -187,6 +188,58 @@ async def get_bot_username(client: Client):
     me = await client.get_me()
     return me.username
 
+
+def batch_keyboard(batch_id):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("➕ ADD MORE", callback_data=f"batch_add_{batch_id}")],
+            [InlineKeyboardButton("🔗 GET FREE LINK", callback_data=f"batch_done_{batch_id}")],
+            [InlineKeyboardButton("❌ CANCEL", callback_data=f"batch_cancel_{batch_id}")],
+        ]
+    )
+
+
+def find_content_record(content_id):
+    batch = batches_collection.find_one({"_id": content_id})
+    if batch and batch.get("file_message_ids"):
+        return "batch", batch
+
+    old_file = files_collection.find_one({"_id": content_id})
+    if old_file:
+        return "single", old_file
+
+    return None, None
+
+
+def copy_content_to_user(user_id, content_id):
+    kind, record = find_content_record(content_id)
+    if not record:
+        raise RuntimeError("File not found!")
+
+    log_channel = configured_log_channel()
+    if not log_channel:
+        raise RuntimeError("LOG channel configured nahi hai.")
+
+    if kind == "batch":
+        for message_id in record["file_message_ids"]:
+            bot_api(
+                "copyMessage",
+                {
+                    "chat_id": user_id,
+                    "from_chat_id": log_channel,
+                    "message_id": int(message_id),
+                },
+            )
+    else:
+        bot_api(
+            "copyMessage",
+            {
+                "chat_id": user_id,
+                "from_chat_id": log_channel,
+                "message_id": int(record["message_id"]),
+            },
+        )
+
 # =========================
 # /START
 # =========================
@@ -217,23 +270,13 @@ async def start_handler(client: Client, message: Message):
         )
         return
 
-    file_record = files_collection.find_one({"_id": file_id_str})
-    if not file_record:
+    content_kind, content_record = find_content_record(file_id_str)
+    if not content_record:
         await message.reply("🤔 **File not found!** Ho sakta hai link galat ya expire ho gaya ho.")
         return
 
     try:
-        log_channel = configured_log_channel()
-        if not log_channel:
-            raise RuntimeError("LOG channel configured nahi hai.")
-        bot_api(
-            "copyMessage",
-            {
-                "chat_id": message.from_user.id,
-                "from_chat_id": log_channel,
-                "message_id": int(file_record["message_id"]),
-            },
-        )
+        copy_content_to_user(message.from_user.id, file_id_str)
     except Exception as e:
         logging.error(f"File delivery error: {e}")
         await message.reply(f"❌ File bhejte waqt error aa gaya.\n`{e}`")
@@ -243,10 +286,7 @@ async def start_handler(client: Client, message: Message):
 # =========================
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
 async def file_handler(client: Client, message: Message):
-    # Ignore media messages sent by bots. This prevents a delivered/copyMessage
-    # photo from being treated as a new user upload and generating another link.
     if message.from_user and message.from_user.is_bot:
-        logging.info("Ignoring media message sent by bot: %s", message.from_user.id)
         return
 
     bot_mode = await get_bot_mode()
@@ -254,12 +294,47 @@ async def file_handler(client: Client, message: Message):
         await message.reply("😔 **Sorry!** Abhi sirf Admins hi files upload kar sakte hain.")
         return
 
-    status_msg = await message.reply("⏳ Please wait, file upload kar raha hu...", quote=True)
+    status_msg = None
 
     try:
         log_channel = configured_log_channel()
         if not log_channel:
             raise RuntimeError("LOG channel configured nahi hai.")
+
+        # Reuse an active batch for this user. If none exists, start a new one.
+        batch = batches_collection.find_one(
+            {"user_id": message.from_user.id, "active": True}
+        )
+        if not batch:
+            batch_id = generate_random_string(12)
+            batches_collection.insert_one(
+                {
+                    "_id": batch_id,
+                    "user_id": message.from_user.id,
+                    "file_message_ids": [],
+                    "active": True,
+                }
+            )
+            batch = batches_collection.find_one({"_id": batch_id})
+        else:
+            batch_id = batch["_id"]
+
+        # Reuse the same status message so the buttons stay together.
+        old_status_id = batch.get("status_message_id")
+        if old_status_id:
+            try:
+                status_msg = await client.get_messages(message.chat.id, int(old_status_id))
+            except Exception:
+                status_msg = None
+
+        if status_msg:
+            await status_msg.edit_text("⏳ File batch mein add kar raha hu...")
+        else:
+            status_msg = await message.reply("⏳ File batch mein add kar raha hu...", quote=True)
+            batches_collection.update_one(
+                {"_id": batch_id},
+                {"$set": {"status_message_id": status_msg.id}},
+            )
 
         # DIRECT Bot API call. No Pyrogram peer lookup.
         result = bot_api(
@@ -272,29 +347,29 @@ async def file_handler(client: Client, message: Message):
         )
         logged_message_id = int(result["message_id"])
 
-        file_id_str = generate_random_string()
-        files_collection.insert_one(
-            {
-                "_id": file_id_str,
-                "message_id": logged_message_id,
-                "log_channel": str(log_channel),
-                "created_by": message.from_user.id,
-            }
+        batches_collection.update_one(
+            {"_id": batch_id},
+            {"$push": {"file_message_ids": logged_message_id}},
         )
 
-        bot_username = await get_bot_username(client)
-        share_link = f"https://t.me/{bot_username}?start={file_id_str}"
+        updated_batch = batches_collection.find_one({"_id": batch_id})
+        count = len(updated_batch.get("file_message_ids", []))
 
         await status_msg.edit_text(
-            f"✅ **Link Generated Successfully!**\n\n"
-            f"🔗 Your Link: `{share_link}`",
-            disable_web_page_preview=True,
+            f"📦 **Batch Ready!**\n\n"
+            f"📁 Files in this batch: **{count}**\n\n"
+            "➕ Aur files ke liye **ADD MORE** dabayein.\n"
+            "🔗 Sabhi files ka ek link banane ke liye **GET FREE LINK** dabayein.",
+            reply_markup=batch_keyboard(batch_id),
         )
     except Exception as e:
         logging.exception("File handling error")
-        await status_msg.edit_text(
-            f"❌ **Error!**\n\nKuch galat ho gaya.\n`Details: {e}`"
-        )
+        if status_msg:
+            await status_msg.edit_text(
+                f"❌ **Error!**\n\nKuch galat ho gaya.\n`Details: {e}`"
+            )
+        else:
+            await message.reply(f"❌ **Error!**\n\n`Details: {e}`")
 
 # =========================
 # /SETLOG
@@ -423,56 +498,72 @@ async def set_mode_callback(client: Client, callback_query: CallbackQuery):
     )
 
 # =========================
-# JOIN CHECK -> FILE DELIVERY
+# BATCH CONTROLS
 # =========================
-@app.on_callback_query(filters.regex(r"^check_join_(.+)$"))
-async def check_join_callback(client: Client, callback_query: CallbackQuery):
-    user_id = callback_query.from_user.id
-    file_id_str = callback_query.matches[0].group(1)
+@app.on_callback_query(filters.regex(r"^batch_add_(.+)$"))
+async def batch_add_callback(client: Client, callback_query: CallbackQuery):
+    batch_id = callback_query.matches[0].group(1)
+    batch = batches_collection.find_one(
+        {"_id": batch_id, "user_id": callback_query.from_user.id, "active": True}
+    )
+    if not batch:
+        await callback_query.answer("Ye batch active nahi hai.", show_alert=True)
+        return
 
-    if not await is_user_member(client, user_id):
-        await callback_query.answer(
-            "Aapne abhi tak Update Channel join nahi kiya hai.", show_alert=True
+    count = len(batch.get("file_message_ids", []))
+    await callback_query.answer("Ab next file bhejo 👍")
+    await callback_query.message.edit_text(
+        f"📦 **Batch mein {count} file(s) hain.**\n\n"
+        "📤 Ab next file bhejo.\n"
+        "🔗 Jab sab files bhej do, **GET FREE LINK** dabana.",
+        reply_markup=batch_keyboard(batch_id),
+    )
+
+
+@app.on_callback_query(filters.regex(r"^batch_done_(.+)$"))
+async def batch_done_callback(client: Client, callback_query: CallbackQuery):
+    batch_id = callback_query.matches[0].group(1)
+    batch = batches_collection.find_one(
+        {"_id": batch_id, "user_id": callback_query.from_user.id}
+    )
+    if not batch:
+        await callback_query.answer("Batch not found!", show_alert=True)
+        return
+
+    if batch.get("share_link"):
+        await callback_query.answer("Link already generated.")
+        await callback_query.message.edit_text(
+            f"✅ **Batch Link Ready!**\n\n"
+            f"📁 Files: **{len(batch.get('file_message_ids', []))}**\n\n"
+            f"🔗 Your Link: `{batch['share_link']}`",
+            disable_web_page_preview=True,
         )
         return
 
-    file_record = files_collection.find_one({"_id": file_id_str})
-    if not file_record:
-        await callback_query.answer("File not found!", show_alert=True)
+    file_ids = batch.get("file_message_ids", [])
+    if not file_ids:
+        await callback_query.answer("Pehle kam se kam 1 file bhejo.", show_alert=True)
         return
 
     try:
-        log_channel = configured_log_channel()
-        if not log_channel:
-            raise RuntimeError("LOG channel configured nahi hai.")
-
-        await callback_query.answer("✅ Verified! File bhej raha hu...", show_alert=False)
-        bot_api(
-            "copyMessage",
-            {
-                "chat_id": user_id,
-                "from_chat_id": log_channel,
-                "message_id": int(file_record["message_id"]),
-            },
+        bot_username = await get_bot_username(client)
+        share_link = f"https://t.me/{bot_username}?start={batch_id}"
+        batches_collection.update_one(
+            {"_id": batch_id},
+            {"$set": {"active": False, "share_link": share_link}},
         )
-        await callback_query.message.delete()
+        await callback_query.answer("✅ Link generated!")
+        await callback_query.message.edit_text(
+            f"✅ **Link Generated Successfully!**\n\n"
+            f"📁 Files in batch: **{len(file_ids)}**\n\n"
+            f"🔗 Your Link: `{share_link}`",
+            disable_web_page_preview=True,
+        )
     except Exception as e:
-        logging.error(f"Callback file delivery error: {e}")
-        await callback_query.message.edit_text(f"❌ File bhejte waqt error aa gaya.\n`{e}`")
+        logging.exception("Batch link generation error")
+        await callback_query.answer("Link generate nahi hua.", show_alert=True)
+        await callback_query.message.edit_text(f"❌ **Error!**\n`{e}`")
 
-# =========================
-# STARTUP
-# =========================
-if __name__ == "__main__":
-    if not ADMINS:
-        logging.warning("ADMIN_IDS is not set.")
 
-    logging.info("Starting Flask web server...")
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-    logging.info("Bot is starting...")
-    app.run()
-    logging.info("Bot has stopped.")
-
-        
+@app.on_callback_query(filters.regex(r"^batch_cancel_(.+)$"))
+async def batch_cancel_
