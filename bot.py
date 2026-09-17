@@ -243,6 +243,12 @@ async def start_handler(client: Client, message: Message):
 # =========================
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
 async def file_handler(client: Client, message: Message):
+    # Ignore media messages sent by bots. This prevents a delivered/copyMessage
+    # photo from being treated as a new user upload and generating another link.
+    if message.from_user and message.from_user.is_bot:
+        logging.info("Ignoring media message sent by bot: %s", message.from_user.id)
+        return
+
     bot_mode = await get_bot_mode()
     if bot_mode == "private" and message.from_user.id not in ADMINS:
         await message.reply("😔 **Sorry!** Abhi sirf Admins hi files upload kar sakte hain.")
@@ -468,4 +474,5 @@ if __name__ == "__main__":
     logging.info("Bot is starting...")
     app.run()
     logging.info("Bot has stopped.")
+
         
