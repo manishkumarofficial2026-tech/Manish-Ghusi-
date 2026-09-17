@@ -118,13 +118,16 @@ def configured_log_channel():
 
 
 def configured_update_channel():
-    # Render ENV is the source of truth.
-    # This prevents an old MongoDB channel ID from causing
-    # Telegram API: "Bad Request: chat not found".
+    # For the public Update channel, prefer the username saved by /setupdate.
+    # The username is safer than a stale/wrong numeric ID in Render ENV.
+    setting = settings_collection.find_one({"_id": "update_channel"})
+    username = setting.get("username") if setting else None
+    if username:
+        return tg_chat_id(username)
+
     if UPDATE_CHANNEL:
         return tg_chat_id(UPDATE_CHANNEL)
 
-    setting = settings_collection.find_one({"_id": "update_channel"})
     if setting and setting.get("chat_id"):
         return setting["chat_id"]
     return None
