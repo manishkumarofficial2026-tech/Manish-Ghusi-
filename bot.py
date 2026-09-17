@@ -35,7 +35,7 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
-LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL")) 
+LOG_CHANNEL_ENV = os.environ.get("LOG_CHANNEL", "-1004410113938").strip() 
 UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "").strip() 
 
 # Admin configuration
@@ -56,21 +56,13 @@ except Exception as e:
 # --- Pyrogram Client ---
 app = Client("FileLinkBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- Temporary LOG Channel Test ---
-async def test_log_channel():
-    try:
-        chat = await app.get_chat(LOG_CHANNEL)
-        logging.info(f"✅ LOG CHANNEL TEST SUCCESS: {chat.title} | ID: {chat.id}")
-    except Exception as e:
-        logging.error(f"❌ LOG CHANNEL TEST FAILED: {e}")
-
 # --- Helper Functions ---
 def generate_random_string(length=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 async def is_user_member(client: Client, user_id: int) -> bool:
     try:
-        await client.get_chat_member(chat_id=f"@{UPDATE_CHANNEL.lstrip("@")}", user_id=user_id)
+        await client.get_chat_member(chat_id=f"@{UPDATE_CHANNEL.lstrip('@')}", user_id=user_id)
         return True
     except UserNotParticipant:
         return False
@@ -85,14 +77,57 @@ async def get_bot_mode() -> str:
     settings_collection.update_one({"_id": "bot_mode"}, {"$set": {"mode": "public"}}, upsert=True)
     return "public"
 
+async def get_log_channel():
+    setting = settings_collection.find_one({"_id": "log_channel"})
+    if setting and setting.get("chat_id"):
+        return int(setting["chat_id"])
+    if LOG_CHANNEL_ENV:
+        try:
+            return int(LOG_CHANNEL_ENV)
+        except ValueError:
+            return LOG_CHANNEL_ENV.lstrip("@")
+    return None
+
 # --- Bot Command Handlers ---
+
+@app.on_message(filters.command("setlog") & filters.private)
+async def setlog_handler(client: Client, message: Message):
+    if message.from_user.id not in ADMINS:
+        await message.reply("❌ Aapke paas permission nahi hai.")
+        return
+
+    if not message.reply_to_message:
+        await message.reply(
+            "❌ Pehle Database/LOG channel ka koi message yahan forward karo, "
+            "phir us forwarded message par reply karke /setlog bhejo."
+        )
+        return
+
+    forwarded = message.reply_to_message
+    chat = forwarded.forward_from_chat
+    if not chat:
+        await message.reply(
+            "❌ Ye forwarded channel message nahi lag raha. Database channel se "
+            "ek normal message forward karke us par /setlog reply karo."
+        )
+        return
+
+    settings_collection.update_one(
+        {"_id": "log_channel"},
+        {"$set": {"chat_id": chat.id, "title": chat.title or "LOG Channel"}},
+        upsert=True
+    )
+    await message.reply(
+        f"✅ LOG channel configured!\n\n📁 **{chat.title or 'LOG Channel'}**\n🆔 `{chat.id}`"
+    )
+
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     if len(message.command) > 1:
         file_id_str = message.command[1]
 
         if not await is_user_member(client, message.from_user.id):
-            join_button = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL.lstrip("@")}")
+            join_button = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL.lstrip('@')}")
             joined_button = InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{file_id_str}")
             keyboard = InlineKeyboardMarkup([[join_button], [joined_button]])
 
@@ -105,9 +140,11 @@ async def start_handler(client: Client, message: Message):
         file_record = files_collection.find_one({"_id": file_id_str})
         if file_record:
             try:
-                log_setting = settings_collection.find_one({"_id": "log_channel"})
-                target_log = log_setting.get("id") if log_setting else LOG_CHANNEL
-                await client.copy_message(chat_id=message.from_user.id, from_chat_id=target_log, message_id=file_record['message_id'])
+                log_channel = await get_log_channel()
+                if not log_channel:
+                    raise RuntimeError("LOG channel configured nahi hai. Pehle /setlog configure karo.")
+                await client.get_chat(log_channel)
+                await client.copy_message(chat_id=message.from_user.id, from_chat_id=log_channel, message_id=file_record['message_id'])
             except Exception as e:
                 await message.reply(f"❌ Sorry, file bhejte waqt ek error aa gaya.\n`Error: {e}`")
         else:
@@ -125,12 +162,12 @@ async def file_handler(client: Client, message: Message):
     status_msg = await message.reply("⏳ Please wait, file upload kar raha hu...", quote=True)
 
     try:
-        log_setting = settings_collection.find_one({"_id": "log_channel"})
-        target_log = log_setting.get("id") if log_setting else LOG_CHANNEL
-        if not target_log:
-            raise ValueError("LOG channel configured nahi hai.")
-        await client.get_chat(target_log)
-        forwarded_message = await message.forward(target_log)
+        log_channel = await get_log_channel()
+        if not log_channel:
+            raise RuntimeError("LOG channel configured nahi hai. Pehle /setlog configure karo.")
+        # Resolve the channel before forwarding; this also gives a clear peer error.
+        await client.get_chat(log_channel)
+        forwarded_message = await message.forward(log_channel)
         file_id_str = generate_random_string()
         files_collection.insert_one({'_id': file_id_str, 'message_id': forwarded_message.id})
         bot_username = (await client.get_me()).username
@@ -201,9 +238,11 @@ async def check_join_callback(client: Client, callback_query: CallbackQuery):
         file_record = files_collection.find_one({"_id": file_id_str})
         if file_record:
             try:
-                log_setting = settings_collection.find_one({"_id": "log_channel"})
-                target_log = log_setting.get("id") if log_setting else LOG_CHANNEL
-                await client.copy_message(chat_id=user_id, from_chat_id=target_log, message_id=file_record['message_id'])
+                log_channel = await get_log_channel()
+                if not log_channel:
+                    raise RuntimeError("LOG channel configured nahi hai. Pehle /setlog configure karo.")
+                await client.get_chat(log_channel)
+                await client.copy_message(chat_id=user_id, from_chat_id=log_channel, message_id=file_record['message_id'])
                 await callback_query.message.delete()
             except Exception as e:
                 await callback_query.message.edit_text(f"❌ File bhejte waqt error aa gaya.\n`Error: {e}`")
@@ -224,8 +263,7 @@ if __name__ == "__main__":
 
     logging.info("Bot is starting...")
 
-    # Keep the bot running normally. Do not start/stop it for a startup peer test.
     app.run()
 
     logging.info("Bot has stopped.")
-                
+    
