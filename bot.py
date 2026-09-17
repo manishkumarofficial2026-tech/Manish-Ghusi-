@@ -118,19 +118,29 @@ def configured_log_channel():
 
 
 def configured_update_channel():
+    # Render ENV is the source of truth.
+    # This prevents an old MongoDB channel ID from causing
+    # Telegram API: "Bad Request: chat not found".
+    if UPDATE_CHANNEL:
+        return tg_chat_id(UPDATE_CHANNEL)
+
     setting = settings_collection.find_one({"_id": "update_channel"})
     if setting and setting.get("chat_id"):
         return setting["chat_id"]
-    return tg_chat_id(UPDATE_CHANNEL) if UPDATE_CHANNEL else None
+    return None
 
 
 def update_join_url():
+    # Prefer the Render ENV username so an old MongoDB value cannot
+    # send users to the wrong channel.
+    if UPDATE_CHANNEL and not UPDATE_CHANNEL.lstrip("@").startswith("-100"):
+        return f"https://t.me/{UPDATE_CHANNEL.lstrip('@')}"
+
     setting = settings_collection.find_one({"_id": "update_channel"})
     username = setting.get("username") if setting else None
     if username:
         return f"https://t.me/{username.lstrip('@')}"
-    if UPDATE_CHANNEL and not UPDATE_CHANNEL.lstrip("@").startswith("-100"):
-        return f"https://t.me/{UPDATE_CHANNEL.lstrip('@')}"
+
     invite = settings_collection.find_one({"_id": "update_invite"})
     if invite and invite.get("url"):
         return invite["url"]
@@ -146,14 +156,17 @@ async def is_user_member(client: Client, user_id: int) -> bool:
         # Membership check through Bot API: reliable after restarts.
         result = bot_api("getChatMember", {"chat_id": update_chat, "user_id": user_id})
         status = result.get("status", "")
-        if status in ("creator", "administrator", "member", "owner"):
+        logging.info(f"JOIN CHECK user={user_id} chat={update_chat} status={status}")
+        if status in ("creator", "administrator", "member"):
             return True
         # A restricted user can still be a member if Telegram says so.
         if status == "restricted":
             return bool(result.get("is_member", False))
         return False
-    except Exception as e:
-        logging.error(f"Membership check error for {user_id}: {e}")
+    except Exception:
+        logging.exception(
+            f"Membership API check failed for user={user_id}, chat={update_chat}"
+        )
         return False
 
 
@@ -452,4 +465,4 @@ if __name__ == "__main__":
     logging.info("Bot is starting...")
     app.run()
     logging.info("Bot has stopped.")
-    
+        
