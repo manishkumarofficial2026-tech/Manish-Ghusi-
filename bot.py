@@ -146,7 +146,7 @@ async def is_user_member(client: Client, user_id: int) -> bool:
         # Membership check through Bot API: reliable after restarts.
         result = bot_api("getChatMember", {"chat_id": update_chat, "user_id": user_id})
         status = result.get("status", "")
-        if status in ("creator", "administrator", "member"):
+        if status in ("creator", "administrator", "member", "owner"):
             return True
         # A restricted user can still be a member if Telegram says so.
         if status == "restricted":
